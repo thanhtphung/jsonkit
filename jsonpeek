@@ -1,0 +1,461 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+from json import dump, dumps, load
+from sys import exit, stderr, stdin, stdout
+
+
+# Deepen flat dictionary entries. Ignore entries not in scope.
+# Return the deep dictionary entries.
+# flat['a.b.c'] --> deep['a']['b']['c']
+# flat['a.b[i]'] --> deep['a']['b'][i]
+def deepen(flat, scope):
+    deep = {}
+    for dotted_key, value in flat.items():
+        if dotted_key not in scope:
+            continue
+
+        parent, subkeys = _prepare_for_right_most_subkey(dotted_key, deep)
+        right_most_subkey = subkeys[-1]
+        if not right_most_subkey.endswith(']'):  # k=value
+            parent[right_most_subkey] = value
+            continue
+
+        k, i = _parse_k_sub_i(right_most_subkey)
+        if not k.endswith(']'):  # k[i]=value
+            _set_k_sub_i_value(k, i, value, parent)
+            continue
+
+        # k[i][j0]=value, k[i[j0][j1]=value, etc.
+        k_sub_is = _parse_seq_of_seq(k)
+        k_sub_is.append((right_most_subkey, k, i))
+        _set_seq_of_seq_value(k_sub_is, value, parent)
+
+    return deep
+
+
+# Restore JSON from flatten key-value pairs.
+def deepen_kvs(file):
+    from ast import literal_eval
+
+    flat = {}
+    for line in file:
+        separator = line.find(': ')
+        k = line[0:separator].strip()
+        v = line[separator+2:-1]
+        try:
+            flat[k] = literal_eval(v)
+        except ValueError:
+            try:
+                json_to_python = {"false": "False", "null": "None", "true": "True"}
+                flat[k] = literal_eval(json_to_python[v])
+            except KeyError:
+                flat[k] = v
+        except SyntaxError:
+            raise SyntaxError
+
+    return deepen(flat, flat.keys())
+
+
+# Dump all attributes as compact or beautified JSON. Allow sort and
+# indentation specification in command-line options. Return False if
+# not done as command-line arguments indicate need for some filtering
+# or flattening.
+def dump_all(deep, args):
+    done = False
+    if args.compact:
+        dump(deep, stdout, indent=None, separators=(',', ':'), sort_keys=not args.no_sort)
+        done = True
+    elif not args.flatten or args.indent is not None:
+        indent = args.indent if args.indent is not None else 4
+        dump(deep, stdout, indent=indent, separators=(',', ': '), sort_keys=not args.no_sort)
+        print()
+        done = True
+    return done
+
+
+# Dump given attributes as compact or beautified JSON. Allow sort and
+# indentation specification in command-line options. Return False if
+# not done as command-line arguments indicate need for some flattening.
+# Ignore entries not in scope.
+def dump_attrs(flat, args, scope):
+    done = False
+    if args.compact:
+        deep = deepen(flat, set(scope))
+        dump(deep, stdout, indent=None, separators=(',', ':'), sort_keys=not args.no_sort)
+        done = True
+    elif not args.flatten or args.indent is not None:
+        deep = deepen(flat, set(scope))
+        indent = args.indent if args.indent is not None else 4
+        dump(deep, stdout, indent=indent, separators=(',', ': '), sort_keys=not args.no_sort)
+        print()
+        done = True
+    return done
+
+
+# Filter given attributes to determine what to peek at. If a given
+# attribute is not an exact match, assume it is a prefix, or a postfix,
+# or some infix. For example, 'a.b' can effective mean all attribute
+# names starting with, or ending with, or including 'a.b'. Return a tuple
+# of 2 list. The first includes unidentifiable attributes. The second
+# includes attribute keys to peek at.
+def filter_scope(flat, attrs, all_but_these):
+    bad_attrs = []
+    scope = []
+    for attr in attrs:
+        if attr not in flat:
+            attr_keys = [n for n in flat.keys() if n.startswith(attr)]
+            if not attr_keys:
+                attr_keys = [n for n in flat.keys() if n.endswith(attr)]
+            if not attr_keys:
+                attr_keys = [n for n in flat.keys() if n.find(attr) > 0]
+            scope.extend(attr_keys) if attr_keys else bad_attrs.append(attr)
+        else:
+            scope.append(attr)
+    if all_but_these:
+        scope = list(set(flat.keys()) - set(scope))
+    return bad_attrs, scope
+
+
+# Recursively flatten deep dictionary entries.
+# flat['a']['b']['c'] --> flat['a.b.c']
+# flat['a']['b'][i] --> flat['a.b[i]']
+def flatten(flat, dotted_key, value):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            flatten(flat, '{}.{}'.format(dotted_key, k), v)
+        if value:
+            return
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            flatten(flat, '{}[{}]'.format(dotted_key, i), v)
+        if value:
+            return
+    j = 0 if dotted_key.startswith("[") else 1
+    flat[dotted_key[j:]] = value
+
+
+# Dump JSON as flatten key-value pairs.
+# Sort output as specified in command-line options.
+# Ignore entries not in scope.
+def flatten_json(flat, args, scope):
+    if scope:
+        if args.be_quiet:
+            show_attrs_quietly(flat, scope) if args.no_sort else show_attrs_sorted_quietly(flat, scope)
+        else:
+            show_attrs(flat, scope) if args.no_sort else show_attrs_sorted(flat, scope)
+    elif args.be_quiet:
+        show_all_quietly(flat) if args.no_sort else show_all_sorted_quietly(flat)
+    elif args.align_keys:
+        show_all_aligned(flat) if args.no_sort else show_all_aligned_sorted(flat)
+    else:
+        show_all(flat) if args.no_sort else show_all_sorted(flat)
+
+
+def main():
+
+    # load JSON file into deep dictionary entries
+    # allow loading of flatten key-value pairs
+    args = parse_args()
+    deep = None
+    try:
+        deep = deepen_kvs(args.file) if args.deepen else load(args.file)
+
+    # could not load JSON file
+    except ValueError:
+        print('{}: not a JSON file?'.format(args.file.name), file=stderr)
+        exit(1)
+
+    # could not load file with flatten key-value pairs
+    except SyntaxError:
+        print('{}: not a file with flatten key-value pairs?'.format(args.file.name), file=stderr)
+        exit(1)
+
+    except Exception:
+        exit(1)
+
+    # dump all attributes as compact or beautified JSON
+    if not args.attrs:
+        done = dump_all(deep, args)
+        if done:
+            exit(0)
+
+    # dump (parts of) JSON file
+    # or flatten JSON file into key-value pairs
+    flat = {}
+    flatten(flat, '', deep)
+    bad_attrs, scope = filter_scope(flat, args.attrs, args.all_but_these)
+    if bad_attrs:
+        print('{}: unidentifiable attributes.'.format(bad_attrs), file=stderr)
+        rc = 2
+    else:
+        dump_attrs(flat, args, scope) or flatten_json(flat, args, scope)
+        rc = 0
+    exit(rc)
+
+
+def parse_args():
+    from argparse import ArgumentParser, FileType
+    parser = ArgumentParser(description='Peek in JSON file at some attributes.')
+    parser.add_argument('file',
+                        default=stdin,
+                        help='file to peek in (use "-" for standard input)',
+                        nargs='?',
+                        type=FileType('r'))
+    parser.add_argument('attrs',
+                        help='dotted attributes to peek at (e.g., NetworkSettings.IPAddress)',
+                        nargs='*')
+    parser.add_argument('-q', '--be-quiet',
+                        action='store_true',
+                        default=False,
+                        dest='be_quiet',
+                        help="don't show attribute keys")
+    parser.add_argument('--align-keys',
+                        action='store_true',
+                        default=False,
+                        help="align keys when flattening")
+    parser.add_argument('--all-but-these',
+                        action='store_true',
+                        default=False,
+                        help="show all attributes except given ones")
+    parser.add_argument('--compact',
+                        action='store_true',
+                        default=False,
+                        help="dump as compact JSON")
+    parser.add_argument('--deepen',
+                        action='store_true',
+                        default=False,
+                        help="load JSON from flatten key-value pairs")
+    parser.add_argument('--flatten',
+                        action='store_true',
+                        default=False,
+                        help="dump JSON as flatten key-value pairs")
+    parser.add_argument('--indent',
+                        default=None,
+                        help="dump as beautified JSON with given indentation",
+                        type=int)
+    parser.add_argument('--no-sort',
+                        action='store_true',
+                        default=False,
+                        help="don't sort output by keys")
+    args = parser.parse_args()
+    return args
+
+
+# Dump JSON as flatten key-value pairs.
+# Dump only entries with keys in given scope.
+def show_attrs(flat, scope):
+    for n in scope:
+        print('{}: {}'.format(n, dumps(flat[n])))
+
+
+# Dump flatten JSON without keys.
+# Dump only entries with keys in given scope.
+def show_attrs_quietly(flat, scope):
+    for n in scope:
+        print('{}'.format(dumps(flat[n])))
+
+
+# Dump JSON as flatten key-value pairs.
+# Sort entries by keys.
+# Dump only entries with keys in given scope.
+def show_attrs_sorted(flat, scope):
+    for n in sorted(scope, key=_key, reverse=False):
+        print('{}: {}'.format(n, dumps(flat[n])))
+
+
+# Dump flatten JSON without keys.
+# Sort entries by keys.
+# Dump only entries with keys in given scope.
+def show_attrs_sorted_quietly(flat, scope):
+    for n in sorted(scope):
+        print('{}'.format(dumps(flat[n])))
+
+
+# Dump JSON as flatten key-value pairs.
+def show_all(flat):
+    for n, v in flat.items():
+        print('{}: {}'.format(n, dumps(v)))
+
+
+# Dump JSON as flatten key-value pairs.
+# Right justify keys.
+def show_all_aligned(flat):
+    width = max([len(n) for n in flat.keys()])
+    for n, v in flat.items():
+        print('{:>{}}: {}'.format(n, width, dumps(v)))
+
+
+# Dump JSON as flatten key-value pairs.
+# Sort entries by keys.
+# Right justify keys.
+def show_all_aligned_sorted(flat):
+    width = max([len(n) for n in flat.keys()])
+    for n in sorted(flat.keys(), key=_key):
+        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
+
+
+# Dump flatten JSON without keys.
+def show_all_quietly(flat):
+    for v in flat.values():
+        print('{}'.format(dumps(v)))
+
+
+# Dump JSON as flatten key-value pairs.
+# Sort entries by keys.
+def show_all_sorted(flat):
+    for n in sorted(flat.keys(), key=_key):
+        print('{}: {}'.format(n, dumps(flat[n])))
+
+
+# Dump flatten JSON without keys.
+# Sort entries by keys.
+def show_all_sorted_quietly(flat):
+    for n in sorted(flat.keys()):
+        print('{}'.format(dumps(flat[n])))
+
+
+# noinspection PyUnusedLocal
+def _bye(caught, frame):
+    print()
+    exit(2)
+
+
+def _key(item):
+    return _widen_dotted_key(item, 5)
+
+
+# Create array and dict for 'parent.k[i].'
+# k must be an array with capacity of at least i+1.
+# Return the dict at k[i].
+def _form_seq(k, i, parent):
+    child = parent.setdefault(k, [])
+    if len(child) <= i:
+        child.extend([None] * (i-len(child)+1))
+    if child[i] is None:
+        child[i] = {}
+    return child[i]
+
+
+# Create arrays and dict for 'parent.k[i][j0].', 'parent.k[i][j0][j1].', etc.
+# k must be an array with capacity of at least i+1, and k[i] must be an array
+# with capacity of at least j0+1, etc. Return the dict at k[i]...[jn].
+def _form_seq_of_seq(k_sub_is, parent):
+    k_sub_i, k, i = k_sub_is[0]
+    child = parent.setdefault(k, [])
+    if len(child) <= i:
+        child.extend([None] * (i-len(child)+1))
+
+    for k_sub_j, k, j in k_sub_is[1:]:
+        if child[i] is None:
+            child[i] = []
+        child = child[i]
+        if len(child) <= j:
+            child.extend([None] * (j-len(child)+1))
+        i = j
+
+    if child[i] is None:
+        child[i] = {}
+    return child[i]
+
+
+# Create arrays and dicts for dotted key. For example, if dotted key is 'a.b.c',
+# then root['a']['b'] must be a dict. Allow array-like lists. For example, if
+# dotted key is 'a.b[i].c', then root['a']['b'] must be an array with capacity
+# of at least i+1 entries. Return the parent dict of the right most subkey. Also
+# return parts of the dotted key.
+def _prepare_for_right_most_subkey(dotted_key, root):
+    parent = root
+    subkeys = dotted_key.split('.')
+    for subkey in subkeys[:-1]:
+        if not subkey.endswith(']'):  # 'k.'
+            parent = parent.setdefault(subkey, {})
+            continue
+
+        k, i = _parse_k_sub_i(subkey)
+        if not k.endswith(']'):  # 'k[i].'
+            parent = _form_seq(k, i, parent)
+            continue
+
+        # 'k[i][j0].', 'k[i[j0][j1].', etc.
+        k_sub_is = _parse_seq_of_seq(k)
+        k_sub_is.append((subkey, k, i))
+        parent = _form_seq_of_seq(k_sub_is, parent)
+
+    return parent, subkeys
+
+
+# _parse_k_sub_i('k[i]') --> 'k', i
+def _parse_k_sub_i(k_sub_i):
+    left_of_i = k_sub_i.rfind('[')
+    k = k_sub_i[:left_of_i]
+    i = int(k_sub_i[left_of_i+1:-1])
+    return k, i
+
+
+# _parse_seq_of_seq('k[i][j0]') --> [('k[i]','k',i), ('k[i][j0]','k[i]',j0)]
+# _parse_seq_of_seq('k[i][j0][j1]') --> [('k[i]','k',i), ('k[i][j0]','k[i]',j0), ('k[i][j0][j1]','k[i][j0]',j1)]
+def _parse_seq_of_seq(seq_of_seq):
+    k_sub_is = []
+    while seq_of_seq.endswith(']'):
+        k, i = _parse_k_sub_i(seq_of_seq)
+        k_sub_is.insert(0, (seq_of_seq, k, i))
+        seq_of_seq = k
+    return k_sub_is
+
+
+# parent.k[i] = value
+def _set_k_sub_i_value(k, i, value, parent):
+    child = parent.setdefault(k, [])
+    if len(child) <= i:
+        child.extend([None] * (i-len(child)+1))
+    child[i] = value
+
+
+# parent.k[i][j0] = value
+# parent.k[i][j0][j1] = value
+def _set_seq_of_seq_value(k_sub_is, value, parent):
+    k_sub_i, k, i = k_sub_is[0]
+    child = parent.setdefault(k, [])
+    if len(child) <= i:
+        child.extend([None] * (i-len(child)+1))
+
+    for k_sub_j, k, j in k_sub_is[1:]:
+        if child[i] is None:
+            child[i] = []
+        child = child[i]
+        if len(child) <= j:
+            child.extend([None] * (j-len(child)+1))
+        i = j
+
+    child[i] = value
+
+
+# Widen all sequence indices with leading zeroes.
+# Mainly for numeric sorting using strings.
+# _widen_dotted_key('a[123]', 5) --> 'a[00123]'
+# _widen_dotted_key('a.b[123].xyz[45]', 5) --> 'a.b[00123].xyz[00045]'
+def _widen_dotted_key(dotted_key, index_width):
+    right_of_i = dotted_key.find(']')
+    if right_of_i > 0:
+        j = right_of_i + 1
+        widen = _widen_k_sub_i(dotted_key[:j], index_width)
+        return widen if (j == len(dotted_key)) else widen + _widen_dotted_key(dotted_key[j:], index_width)
+    return dotted_key
+
+
+# Widen 'k[i]' with leading zeroes in the index.
+# Mainly for numeric sorting using strings.
+# _widen_k_sub_i('a[123]', 5) --> 'a[00123]'
+def _widen_k_sub_i(k_sub_i, width_of_i):
+    i = k_sub_i.rfind('[') + 1
+    width = len(k_sub_i) - i - 1
+    return k_sub_i[:i] + k_sub_i[i:].zfill(width_of_i+1) if width < width_of_i else k_sub_i
+
+
+if __name__ == '__main__':
+    from signal import signal, SIGHUP, SIGINT, SIGTERM
+    signal(SIGHUP, _bye)
+    signal(SIGINT, _bye)
+    signal(SIGTERM, _bye)
+    main()
