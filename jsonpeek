@@ -5,7 +5,8 @@ from json import dump, dumps, load
 from sys import exit, stderr, stdin, stdout
 
 
-# Deepen flat dictionary entries. Ignore entries not in scope.
+# Deepen flat dictionary entries.
+# Ignore entries with keys not in scope.
 # Return the deep dictionary entries.
 # flat['a.b.c'] --> deep['a']['b']['c']
 # flat['a.b[i]'] --> deep['a']['b'][i]
@@ -26,12 +27,12 @@ def deepen(flat, scope):
             _set_k_sub_i_value(k, i, value, parent)
             continue
 
-        # k[i][j0]=value, k[i[j0][j1]=value, etc.
+        # k[i][j0]=value, k[i][j0][j1]=value, etc.
         k_sub_is = _parse_seq_of_seq(k)
         k_sub_is.append((right_most_subkey, k, i))
         _set_seq_of_seq_value(k_sub_is, value, parent)
 
-    return deep
+    return deep.get("", deep)
 
 
 # Restore JSON from flatten key-value pairs.
@@ -142,6 +143,8 @@ def flatten_json(flat, args, scope):
     if scope:
         if args.be_quiet:
             show_attrs_quietly(flat, scope) if args.no_sort else show_attrs_sorted_quietly(flat, scope)
+        elif args.align_keys:
+            show_attrs_aligned(flat, scope) if args.no_sort else show_attrs_aligned_sorted(flat, scope)
         else:
             show_attrs(flat, scope) if args.no_sort else show_attrs_sorted(flat, scope)
     elif args.be_quiet:
@@ -196,7 +199,9 @@ def main():
 
 def parse_args():
     from argparse import ArgumentParser, FileType
-    parser = ArgumentParser(description='Peek in JSON file at some attributes.')
+    DESC = 'Peek in given file at some attributes. File can be JSON or flatten key-value pairs. '\
+'Exit 0 for success, 1 for input file errors, and 2 for unidentified attributes.'
+    parser = ArgumentParser(description=DESC)
     parser.add_argument('file',
                         default=stdin,
                         help='file to peek in (use "-" for standard input)',
@@ -247,6 +252,25 @@ def parse_args():
 def show_attrs(flat, scope):
     for n in scope:
         print('{}: {}'.format(n, dumps(flat[n])))
+
+
+# Dump JSON as flatten key-value pairs.
+# Dump only entries with keys in given scope.
+# Right justify keys.
+def show_attrs_aligned(flat, scope):
+    width = max([len(n) for n in scope])
+    for n in scope:
+        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
+
+
+# Dump JSON as flatten key-value pairs.
+# Sort entries by keys.
+# Dump only entries with keys in given scope.
+# Right justify keys.
+def show_attrs_aligned_sorted(flat, scope):
+    width = max([len(n) for n in scope])
+    for n in sorted(scope, key=_key, reverse=False):
+        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
 
 
 # Dump flatten JSON without keys.
