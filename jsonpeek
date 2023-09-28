@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-
+#
+# Software by Thanh Phung -- thanhtphung@yahoo.com.
+# No copyrights. No warranties. No restrictions in reuse.
+#
 from __future__ import print_function
 from json import dump, dumps, load
 from sys import exit, stderr, stdin, stdout
