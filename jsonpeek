@@ -39,14 +39,14 @@ def deepen(flat, scope):
 
 
 # Restore JSON from flatten key-value pairs.
-def deepen_kvs(file):
+def deepen_kvs(file, kv_delim):
     from ast import literal_eval
 
     flat = {}
     for line in file:
-        separator = line.find(': ')
+        separator = line.find(kv_delim)
         k = line[0:separator].strip()
-        v = line[separator+2:-1]
+        v = line[separator+len(kv_delim):-1]
         try:
             flat[k] = literal_eval(v)
         except ValueError:
@@ -144,18 +144,13 @@ def flatten(flat, dotted_key, value):
 # Ignore entries not in scope.
 def flatten_json(flat, args, scope):
     if scope:
-        if args.be_quiet:
-            show_attrs_quietly(flat, scope) if args.no_sort else show_attrs_sorted_quietly(flat, scope)
-        elif args.align_keys:
-            show_attrs_aligned(flat, scope) if args.no_sort else show_attrs_aligned_sorted(flat, scope)
-        else:
-            show_attrs(flat, scope) if args.no_sort else show_attrs_sorted(flat, scope)
+        show_scope(flat, args, scope)
     elif args.be_quiet:
         show_all_quietly(flat) if args.no_sort else show_all_sorted_quietly(flat)
     elif args.align_keys:
-        show_all_aligned(flat) if args.no_sort else show_all_aligned_sorted(flat)
+        show_all_aligned(flat, args.kv_delim) if args.no_sort else show_all_aligned_sorted(flat, args.kv_delim)
     else:
-        show_all(flat) if args.no_sort else show_all_sorted(flat)
+        show_all(flat, args.kv_delim) if args.no_sort else show_all_sorted(flat, args.kv_delim)
 
 
 def main():
@@ -165,7 +160,7 @@ def main():
     args = parse_args()
     deep = None
     try:
-        deep = deepen_kvs(args.file) if args.deepen else load(args.file)
+        deep = deepen_kvs(args.file, args.kv_delim) if args.deepen else load(args.file)
 
     # could not load JSON file
     except ValueError:
@@ -202,9 +197,9 @@ def main():
 
 def parse_args():
     from argparse import ArgumentParser, FileType
-    DESC = 'Peek in given file at some attributes. File can be JSON or flatten key-value pairs. '\
-'Exit 0 for success, 1 for input file errors, and 2 for unidentified attributes.'
-    parser = ArgumentParser(description=DESC)
+    desc = 'Peek in given file at some attributes. File can be JSON or flatten key-value pairs. '\
+           'Exit 0 for success, 1 for input file errors, and 2 for unidentified attributes.'
+    parser = ArgumentParser(description=desc)
     parser.add_argument('file',
                         default=stdin,
                         help='file to peek in (use "-" for standard input)',
@@ -242,6 +237,10 @@ def parse_args():
                         default=None,
                         help="dump as beautified JSON with given indentation",
                         type=int)
+    parser.add_argument('--kv-delim',
+                        default=": ",
+                        help="key-value pair delimiter (e.g., ': ')",
+                        type=str)
     parser.add_argument('--no-sort',
                         action='store_true',
                         default=False,
@@ -252,28 +251,28 @@ def parse_args():
 
 # Dump JSON as flatten key-value pairs.
 # Dump only entries with keys in given scope.
-def show_attrs(flat, scope):
+def show_attrs(flat, scope, kv_delim):
     for n in scope:
-        print('{}: {}'.format(n, dumps(flat[n])))
+        print('{}{}{}'.format(n, kv_delim, dumps(flat[n])))
 
 
 # Dump JSON as flatten key-value pairs.
 # Dump only entries with keys in given scope.
 # Right justify keys.
-def show_attrs_aligned(flat, scope):
+def show_attrs_aligned(flat, scope, kv_delim):
     width = max([len(n) for n in scope])
     for n in scope:
-        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
+        print('{:>{}}{}{}'.format(n, width, kv_delim, dumps(flat[n])))
 
 
 # Dump JSON as flatten key-value pairs.
 # Sort entries by keys.
 # Dump only entries with keys in given scope.
 # Right justify keys.
-def show_attrs_aligned_sorted(flat, scope):
+def show_attrs_aligned_sorted(flat, scope, kv_delim):
     width = max([len(n) for n in scope])
     for n in sorted(scope, key=_key, reverse=False):
-        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
+        print('{:>{}}{}{}'.format(n, width, kv_delim, dumps(flat[n])))
 
 
 # Dump flatten JSON without keys.
@@ -286,9 +285,9 @@ def show_attrs_quietly(flat, scope):
 # Dump JSON as flatten key-value pairs.
 # Sort entries by keys.
 # Dump only entries with keys in given scope.
-def show_attrs_sorted(flat, scope):
+def show_attrs_sorted(flat, scope, kv_delim):
     for n in sorted(scope, key=_key, reverse=False):
-        print('{}: {}'.format(n, dumps(flat[n])))
+        print('{}{}{}'.format(n, kv_delim, dumps(flat[n])))
 
 
 # Dump flatten JSON without keys.
@@ -300,26 +299,26 @@ def show_attrs_sorted_quietly(flat, scope):
 
 
 # Dump JSON as flatten key-value pairs.
-def show_all(flat):
+def show_all(flat, kv_delim):
     for n, v in flat.items():
-        print('{}: {}'.format(n, dumps(v)))
+        print('{}{}{}'.format(n, kv_delim, dumps(v)))
 
 
 # Dump JSON as flatten key-value pairs.
 # Right justify keys.
-def show_all_aligned(flat):
+def show_all_aligned(flat, kv_delim):
     width = max([len(n) for n in flat.keys()])
     for n, v in flat.items():
-        print('{:>{}}: {}'.format(n, width, dumps(v)))
+        print('{:>{}}{}{}'.format(n, width, kv_delim, dumps(v)))
 
 
 # Dump JSON as flatten key-value pairs.
 # Sort entries by keys.
 # Right justify keys.
-def show_all_aligned_sorted(flat):
+def show_all_aligned_sorted(flat, kv_delim):
     width = max([len(n) for n in flat.keys()])
     for n in sorted(flat.keys(), key=_key):
-        print('{:>{}}: {}'.format(n, width, dumps(flat[n])))
+        print('{:>{}}{}{}'.format(n, width, kv_delim, dumps(flat[n])))
 
 
 # Dump flatten JSON without keys.
@@ -330,9 +329,9 @@ def show_all_quietly(flat):
 
 # Dump JSON as flatten key-value pairs.
 # Sort entries by keys.
-def show_all_sorted(flat):
+def show_all_sorted(flat, kv_delim):
     for n in sorted(flat.keys(), key=_key):
-        print('{}: {}'.format(n, dumps(flat[n])))
+        print('{}{}{}'.format(n, kv_delim, dumps(flat[n])))
 
 
 # Dump flatten JSON without keys.
@@ -340,6 +339,24 @@ def show_all_sorted(flat):
 def show_all_sorted_quietly(flat):
     for n in sorted(flat.keys()):
         print('{}'.format(dumps(flat[n])))
+
+
+def show_scope(flat, args, scope):
+    if args.be_quiet:
+        if args.no_sort:
+            show_attrs_quietly(flat, scope)
+        else:
+            show_attrs_sorted_quietly(flat, scope)
+    elif args.align_keys:
+        if args.no_sort:
+            show_attrs_aligned(flat, scope, args.kv_delim)
+        else:
+            show_attrs_aligned_sorted(flat, scope, args.kv_delim)
+    else:
+        if args.no_sort:
+            show_attrs(flat, scope, args.kv_delim)
+        else:
+            show_attrs_sorted(flat, scope, args.kv_delim)
 
 
 # noinspection PyUnusedLocal
